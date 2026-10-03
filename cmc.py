@@ -1,6 +1,18 @@
-__version__ = (4, 0, 1)
+#  This file is part of lceta modules
+#  Copyright (c) 2026 lceta
+#  This software is released under the MIT License.
+#  https://opensource.org/licenses/MIT
 
 # meta developer: @lceta
+# meta tags: statistics, chat, messages, media, lurkers, analytics, report, automation
+# meta banner: https://raw.githubusercontent.com/lcetaa/CMC-heroku-bot/refs/heads/main/meta_banner.png
+# meta pic: https://raw.githubusercontent.com/lcetaa/CMC-heroku-bot/refs/heads/main/meta_pic.png
+
+__version__ = (4, 0, 1)
+
+# ░█░░░█▀▀░█▀▀░▀█▀░█▀█
+# ░█░░░█░░░█▀▀░░█░░█▀█
+# ░▀▀▀░▀▀▀░▀▀▀░░▀░░▀░▀
 
 import asyncio
 import logging
