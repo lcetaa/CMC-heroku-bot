@@ -8,7 +8,7 @@
 # meta banner: https://raw.githubusercontent.com/lcetaa/CMC-heroku-bot/refs/heads/main/meta_banner.png
 # meta pic: https://raw.githubusercontent.com/lcetaa/CMC-heroku-bot/refs/heads/main/meta_pic.png
 
-__version__ = (4, 0, 1)
+__version__ = (4, 1, 0)
 
 # ░█░░░█▀▀░█▀▀░▀█▀░█▀█
 # ░█░░░█░░░█▀▀░░█░░█▀█
@@ -495,12 +495,6 @@ class CMCMod(loader.Module):
     strings = {
         "name": "CMC",
         "_cls_doc": "Count messages, media and user stats in a chat",
-        "_cmd_doc_mymsg": "- your messages and media",
-        "_cmd_doc_usermsg": "- user's messages (reply or @username)",
-        "_cmd_doc_allmsg": "- messages of all members",
-        "_cmd_doc_chatstats": "- chat statistics",
-        "_cmd_doc_silent": "- lurkers + HTML report",
-        "_cmd_doc_cmcupdate": "[-f|--force] - check for and install a module update",
         "upd_checking": "Checking for updates...",
         "upd_downloading": "Updating CMC...",
         "upd_done": "CMC updated successfully!",
@@ -511,6 +505,7 @@ class CMCMod(loader.Module):
         "upd_fail": "Update failed. Check the logs.",
         "upd_fetch_fail": "Could not reach the update source. Try again later.",
         "upd_busy": "An update check/install is already running. Try again in a bit.",
+        "busy": "Already working in this chat, please wait for the current command to finish.",
         "cfg_chat": "Group ID (e.g. -1001234567890) to send a copy of the .silent file to",
         "cfg_topic": "Topic ID in that group (General = 1)",
         "cfg_photos": "Embed avatars into the .silent HTML report (the file gets heavier)",
@@ -603,12 +598,6 @@ class CMCMod(loader.Module):
 
     strings_ru = {
         "_cls_doc": "Подсчет сообщений, медиа и статистики пользователей в чате",
-        "_cmd_doc_mymsg": "- ваши сообщения и медиа",
-        "_cmd_doc_usermsg": "- сообщения юзера (реплай или @username)",
-        "_cmd_doc_allmsg": "- сообщения всех участников",
-        "_cmd_doc_chatstats": "- статистика чата",
-        "_cmd_doc_silent": "- молчуны + HTML-отчёт",
-        "_cmd_doc_cmcupdate": "[-f|--force] - проверить и установить обновление модуля",
         "upd_checking": "Проверяю обновления...",
         "upd_downloading": "Обновляю CMC...",
         "upd_done": "CMC успешно обновлён!",
@@ -619,6 +608,7 @@ class CMCMod(loader.Module):
         "upd_fail": "Не удалось обновить. Проверьте логи.",
         "upd_fetch_fail": "Не удалось связаться с источником обновлений. Попробуйте позже.",
         "upd_busy": "Проверка или установка обновления уже идёт. Попробуйте чуть позже.",
+        "busy": "В этом чате уже идёт подсчёт, дождитесь завершения текущей команды.",
         "cfg_chat": "ID группы (например -1001234567890), куда дублировать файл .silent",
         "cfg_topic": "ID топика в этой группе (General = 1)",
         "cfg_photos": "Вставлять аватарки в HTML-отчёт .silent (файл станет тяжелее)",
@@ -711,6 +701,7 @@ class CMCMod(loader.Module):
 
     def __init__(self):
         self._silent_cache = {}
+        self._busy = set()
         self._update_lock = asyncio.Lock()
         self.config = loader.ModuleConfig(
             loader.ConfigValue(
@@ -734,6 +725,21 @@ class CMCMod(loader.Module):
     async def client_ready(self, client, db):
         self._client = client
         self._me = await client.get_me()
+
+    async def on_unload(self):
+        self._silent_cache.clear()
+        self._busy.clear()
+
+    async def _guard(self, message, run):
+        """One heavy command per chat at a time"""
+        key = utils.get_chat_id(message)
+        if key in self._busy:
+            return await utils.answer(message, self.strings("busy"))
+        self._busy.add(key)
+        try:
+            await run(message)
+        finally:
+            self._busy.discard(key)
 
 
     async def _ctx(self, message):
@@ -832,9 +838,12 @@ class CMCMod(loader.Module):
             stats[key] = await self._count(chat_id, flt)
         return stats
 
-
+    @loader.command(ru_doc="- ваши сообщения и медиа", en_doc="- your messages and media")
     @loader.unrestricted
-    async def mymsgcmd(self, message):
+    async def mymsg(self, message):
+        await self._guard(message, self._mymsg_run)
+
+    async def _mymsg_run(self, message):
         """- your messages and media"""
         chat_id, private, title = await self._ctx(message)
         await utils.answer(message, self.strings("my_wait"))
@@ -845,8 +854,12 @@ class CMCMod(loader.Module):
             + self._lines(stats, USER_KEYS, USER_KEYS[2:]),
         )
 
+    @loader.command(ru_doc="- сообщения юзера (реплай или @username)", en_doc="- user's messages (reply or @username)")
     @loader.unrestricted
-    async def usermsgcmd(self, message):
+    async def usermsg(self, message):
+        await self._guard(message, self._usermsg_run)
+
+    async def _usermsg_run(self, message):
         """- user's messages (reply or @username)"""
         args = utils.get_args_raw(message)
         chat_id, private, title = await self._ctx(message)
@@ -870,8 +883,12 @@ class CMCMod(loader.Module):
             + self._lines(stats, USER_KEYS, USER_KEYS[2:]),
         )
 
+    @loader.command(ru_doc="- сообщения всех участников", en_doc="- messages of all members")
     @loader.unrestricted
-    async def allmsgcmd(self, message):
+    async def allmsg(self, message):
+        await self._guard(message, self._allmsg_run)
+
+    async def _allmsg_run(self, message):
         """- messages of all members"""
         chat_id, _, title = await self._ctx(message)
         await utils.answer(message, self.strings("all_wait").format(title))
@@ -899,8 +916,12 @@ class CMCMod(loader.Module):
             + "".join(f"{E_USER} {name}: {E_MSG}<b>{n}</b> {unit}\n" for name, n in counts),
         )
 
+    @loader.command(ru_doc="- статистика чата", en_doc="- chat statistics")
     @loader.unrestricted
-    async def chatstatscmd(self, message):
+    async def chatstats(self, message):
+        await self._guard(message, self._chatstats_run)
+
+    async def _chatstats_run(self, message):
         """- chat statistics"""
         chat_id, _, title = await self._ctx(message)
         await utils.answer(message, self.strings("chat_wait").format(title))
@@ -914,8 +935,12 @@ class CMCMod(loader.Module):
                           ("photo_video", "gifs", "voice", "documents")),
         )
 
+    @loader.command(ru_doc="- молчуны + HTML-отчёт", en_doc="- lurkers + HTML report")
     @loader.unrestricted
-    async def silentcmd(self, message):
+    async def silent(self, message):
+        await self._guard(message, self._silent_run)
+
+    async def _silent_run(self, message):
         """- lurkers + HTML report"""
         S = self.strings
         chat_id, _, title = await self._ctx(message)
@@ -1077,8 +1102,11 @@ class CMCMod(loader.Module):
         except Exception as e:
             logger.debug("Update form: %s", e)
 
-    async def cmcupdatecmd(self, message):
-        """[-f|--force] - check for and install a module update"""
+    @loader.command(
+        ru_doc="[-f|--force] - проверить и установить обновление модуля",
+        en_doc="[-f|--force] - check for and install a module update",
+    )
+    async def cmcupdate(self, message):
         S = self.strings
         args = utils.get_args_raw(message)
         force = "-f" in args or "--force" in args
