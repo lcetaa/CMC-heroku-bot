@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-4.1.0-8fa6ff?style=for-the-badge" alt="version">
+  <img src="https://img.shields.io/badge/version-4.0.1-8fa6ff?style=for-the-badge" alt="version">
   <img src="https://img.shields.io/badge/Hikka%20%2F%20Heroku-userbot-5b4fd0?style=for-the-badge" alt="hikka">
   <img src="https://img.shields.io/badge/Python-3.9%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="python">
   <img src="https://img.shields.io/badge/author-%40lceta-ff82d4?style=for-the-badge" alt="author">
