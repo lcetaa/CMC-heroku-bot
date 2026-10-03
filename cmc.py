@@ -1,9 +1,11 @@
-__version__ = (4, 0, 0)
+__version__ = (4, 0, 1)
 
 # meta developer: @lceta
 
 import asyncio
+import logging
 import base64
+import hashlib
 import io
 import json
 import re
@@ -11,7 +13,13 @@ import time
 import html as _html
 from datetime import datetime, timezone
 
+import aiohttp
 from .. import loader, utils
+
+UPDATE_URL = "https://raw.githubusercontent.com/lcetaa/CMC-heroku-bot/refs/heads/main/cmc.py"
+UPDATE_LOCK_WAIT = 15
+UPDATE_INSTALL_TIMEOUT = 60
+logger = logging.getLogger(__name__)
 try:
     import herokutl as hikkatl
     from herokutl.errors import FloodWaitError
@@ -480,6 +488,17 @@ class CMCMod(loader.Module):
         "_cmd_doc_allmsg": "- messages of all members",
         "_cmd_doc_chatstats": "- chat statistics",
         "_cmd_doc_silent": "- lurkers + HTML report",
+        "_cmd_doc_cmcupdate": "[-f|--force] - check for and install a module update",
+        "upd_checking": "Checking for updates...",
+        "upd_downloading": "Updating CMC...",
+        "upd_done": "CMC updated successfully!",
+        "upd_none": "You already have the latest version.",
+        "upd_none_force": "You already have the latest version. Update anyway?",
+        "upd_force_btn": "↻ Update anyway",
+        "upd_cancel_btn": "✖ Cancel",
+        "upd_fail": "Update failed. Check the logs.",
+        "upd_fetch_fail": "Could not reach the update source. Try again later.",
+        "upd_busy": "An update check/install is already running. Try again in a bit.",
         "cfg_chat": "Group ID (e.g. -1001234567890) to send a copy of the .silent file to",
         "cfg_topic": "Topic ID in that group (General = 1)",
         "cfg_photos": "Embed avatars into the .silent HTML report (the file gets heavier)",
@@ -577,6 +596,17 @@ class CMCMod(loader.Module):
         "_cmd_doc_allmsg": "- сообщения всех участников",
         "_cmd_doc_chatstats": "- статистика чата",
         "_cmd_doc_silent": "- молчуны + HTML-отчёт",
+        "_cmd_doc_cmcupdate": "[-f|--force] - проверить и установить обновление модуля",
+        "upd_checking": "Проверяю обновления...",
+        "upd_downloading": "Обновляю CMC...",
+        "upd_done": "CMC успешно обновлён!",
+        "upd_none": "У вас уже последняя версия.",
+        "upd_none_force": "У вас уже последняя версия. Всё равно обновить?",
+        "upd_force_btn": "↻ Обновить всё равно",
+        "upd_cancel_btn": "✖ Отмена",
+        "upd_fail": "Не удалось обновить. Проверьте логи.",
+        "upd_fetch_fail": "Не удалось связаться с источником обновлений. Попробуйте позже.",
+        "upd_busy": "Проверка или установка обновления уже идёт. Попробуйте чуть позже.",
         "cfg_chat": "ID группы (например -1001234567890), куда дублировать файл .silent",
         "cfg_topic": "ID топика в этой группе (General = 1)",
         "cfg_photos": "Вставлять аватарки в HTML-отчёт .silent (файл станет тяжелее)",
@@ -669,6 +699,7 @@ class CMCMod(loader.Module):
 
     def __init__(self):
         self._silent_cache = {}
+        self._update_lock = asyncio.Lock()
         self.config = loader.ModuleConfig(
             loader.ConfigValue(
                 "report_chat", None, lambda: self.strings("cfg_chat"),
@@ -951,6 +982,123 @@ class CMCMod(loader.Module):
         except Exception:
             pass
         await self._send_copy(data, caption)
+
+    async def _get_local_source(self):
+        """Source code of the currently loaded module (via loader or inspect)"""
+        import inspect
+        import sys
+        mod = sys.modules.get(self.__class__.__module__)
+        ldr_obj = getattr(mod, "__loader__", None)
+        if ldr_obj and hasattr(ldr_obj, "get_source"):
+            try:
+                src = ldr_obj.get_source(self.__class__.__module__)
+                if src:
+                    return src
+            except Exception as e:
+                logger.debug("Failed to get the source via __loader__.get_source(): %s", e)
+        if mod:
+            try:
+                return inspect.getsource(mod)
+            except Exception as e:
+                logger.debug("Failed to get the source via inspect.getsource(): %s", e)
+        return None
+
+    async def _fetch_remote_source(self):
+        """Download the latest module code from GitHub (raw). Bytes or None on error"""
+        try:
+            headers = {"Cache-Control": "no-cache", "Pragma": "no-cache"}
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
+                async with session.get(f"{UPDATE_URL}?_={int(time.time())}", headers=headers) as resp:
+                    if resp.status != 200:
+                        logger.warning("Update: server returned status %s", resp.status)
+                        return None
+                    return await resp.read()
+        except Exception as e:
+            logger.warning("Update: failed to download the source: %s", e)
+            return None
+
+    async def _check_update_hashes(self):
+        """(differs: bool | None, remote_ok: bool)"""
+        remote = await self._fetch_remote_source()
+        if not remote:
+            return None, False
+        local = await self._get_local_source()
+        if not local:
+            logger.warning("Update: no local source hash, assuming they differ")
+            return True, True
+        return hashlib.sha256(remote).hexdigest() != hashlib.sha256(local.encode("utf-8")).hexdigest(), True
+
+    async def _safe_install_update(self):
+        """Install the fresh module version via the Loader"""
+        ldr = self.lookup("Loader")
+        if not ldr or not hasattr(ldr, "download_and_install"):
+            logger.error("Update: the Loader module is unavailable")
+            return False
+        try:
+            res = await asyncio.wait_for(ldr.download_and_install(UPDATE_URL), timeout=UPDATE_INSTALL_TIMEOUT)
+            if getattr(ldr, "fully_loaded", False):
+                ldr.update_modules_in_db()
+            return res == 1
+        except asyncio.TimeoutError:
+            logger.warning("Update: install timed out (%s sec)", UPDATE_INSTALL_TIMEOUT)
+            return False
+        except Exception as e:
+            logger.warning("Update: install failed: %s", e)
+            return False
+
+    async def _upd_force_cb(self, call):
+        S = self.strings
+        try:
+            await call.answer()
+            await call.edit(f"🔄 <b>{S('upd_downloading')}</b>")
+        except Exception as e:
+            logger.debug("Update form: %s", e)
+        ok = await self._safe_install_update()
+        try:
+            await call.edit(f"✅ <b>{S('upd_done')}</b>" if ok else f"❌ <b>{S('upd_fail')}</b>")
+        except Exception as e:
+            logger.debug("Update form: %s", e)
+
+    async def _upd_cancel_cb(self, call):
+        try:
+            await call.delete()
+        except Exception as e:
+            logger.debug("Update form: %s", e)
+
+    async def cmcupdatecmd(self, message):
+        """[-f|--force] - check for and install a module update"""
+        S = self.strings
+        args = utils.get_args_raw(message)
+        force = "-f" in args or "--force" in args
+        m = await utils.answer(message, f"🔄 <b>{S('upd_downloading') if force else S('upd_checking')}</b>")
+        try:
+            await asyncio.wait_for(self._update_lock.acquire(), timeout=UPDATE_LOCK_WAIT)
+        except asyncio.TimeoutError:
+            return await m.edit(f"❌ <b>{S('upd_busy')}</b>")
+        try:
+            if force:
+                ok = await self._safe_install_update()
+                return await m.edit(f"✅ <b>{S('upd_done')}</b>" if ok else f"❌ <b>{S('upd_fail')}</b>")
+            differs, remote_ok = await self._check_update_hashes()
+            if not remote_ok:
+                return await m.edit(f"❌ <b>{S('upd_fetch_fail')}</b>")
+            if not differs:
+                try:
+                    await self.inline.form(
+                        text=f"✅ <b>{S('upd_none_force')}</b>", message=m,
+                        reply_markup=[[
+                            {"text": S("upd_force_btn"), "callback": self._upd_force_cb},
+                            {"text": S("upd_cancel_btn"), "callback": self._upd_cancel_cb},
+                        ]],
+                    )
+                except Exception:
+                    await m.edit(f"✅ <b>{S('upd_none')}</b>")
+                return
+            await m.edit(f"🔄 <b>{S('upd_downloading')}</b>")
+            ok = await self._safe_install_update()
+            await m.edit(f"✅ <b>{S('upd_done')}</b>" if ok else f"❌ <b>{S('upd_fail')}</b>")
+        finally:
+            self._update_lock.release()
 
     @staticmethod
     def _topic(message):
