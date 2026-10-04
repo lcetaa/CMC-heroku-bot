@@ -8,7 +8,7 @@
 # meta banner: https://raw.githubusercontent.com/lcetaa/CMC-heroku-bot/refs/heads/main/meta_banner.png
 # meta pic: https://raw.githubusercontent.com/lcetaa/CMC-heroku-bot/refs/heads/main/meta_pic.png
 
-__version__ = (4, 1, 0)
+__version__ = (4, 0, 1)
 
 # ░█░░░█▀▀░█▀▀░▀█▀░█▀█
 # ░█░░░█░░░█▀▀░░█░░█▀█
