@@ -8,7 +8,7 @@
 # meta banner: https://raw.githubusercontent.com/lcetaa/CMC-heroku-bot/refs/heads/main/meta_banner.png
 # meta pic: https://raw.githubusercontent.com/lcetaa/CMC-heroku-bot/refs/heads/main/meta_pic.png
 
-__version__ = (4, 0, 2)
+__version__ = (4, 0, 3)
 
 # ░█░░░█▀▀░█▀▀░▀█▀░█▀█
 # ░█░░░█░░░█▀▀░░█░░█▀█
@@ -41,6 +41,18 @@ try:
 except ImportError:
     import hikkatl
     from hikkatl.errors import FloodWaitError
+
+
+_EMO_RE = re.compile(r"<emoji document_id=\d+>(.*?)</emoji>", re.S)
+
+
+def _plain(text):
+    """Strip custom emoji tags, keep the plain unicode emoji inside"""
+    return _EMO_RE.sub(r"\1", text)
+
+
+def _bad_doc(e):
+    return "DocumentInvalid" in type(e).__name__ or "inline mode" in str(e)
 
 
 def _emoji(i, c):
@@ -1023,11 +1035,52 @@ class CMCMod(loader.Module):
             return cached[1]
         return manual
 
+    async def _answer(self, message, text, *a, **kw):
+        """utils.answer, retried without custom emoji if Telegram rejects them"""
+        try:
+            return await utils.answer(message, text, *a, **kw)
+        except Exception as e:
+            if not _bad_doc(e):
+                raise
+            return await utils.answer(message, _plain(text), *a, **kw)
+
+    async def _send(self, dest, data, caption=None, **kw):
+        """send_file, retried without custom emoji in the caption"""
+        try:
+            return await self._client.send_file(dest, data, caption=caption, **kw)
+        except Exception as e:
+            if not _bad_doc(e) or not caption:
+                raise
+            if hasattr(data, "seek"):
+                data.seek(0)
+            return await self._client.send_file(dest, data, caption=_plain(caption), **kw)
+
+    async def _target(self, message):
+        """Chat given as an argument (@username, link, ID, tg://chat?id=), else the current chat"""
+        args = utils.get_args_raw(message).strip()
+        if not args:
+            return None
+        m = re.search(r"id=(-?\d+)", args)
+        ref = m.group(1) if m else args
+        if "t.me/" in ref:
+            ref = ref.split("t.me/", 1)[1].split("/")[0].split("?")[0]
+            ref = ref if ref.startswith("+") else "@" + ref
+        cands = [ref]
+        if re.fullmatch(r"-?\d+", ref):
+            n = int(ref)
+            cands = [n] if n < 0 else [int(f"-100{n}"), n]
+        for c in cands:
+            try:
+                return await self._client.get_entity(c)
+            except Exception:
+                continue
+        return None
+
     async def _guard(self, message, run):
         """One heavy command per chat at a time"""
         key = utils.get_chat_id(message)
         if key in self._busy:
-            return await utils.answer(message, self.strings("busy"))
+            return await self._answer(message, self.strings("busy"))
         self._busy.add(key)
         try:
             await run(message)
@@ -1139,9 +1192,9 @@ class CMCMod(loader.Module):
     async def _mymsg_run(self, message):
         """- your messages and media"""
         chat_id, private, title = await self._ctx(message)
-        await utils.answer(message, self.strings("my_wait"))
+        await self._answer(message, self.strings("my_wait"))
         stats = await self.get_message_stats(chat_id, self._me.id, private)
-        await utils.answer(
+        await self._answer(
             message,
             f"{E_USER} {self.strings('my_head').format(title)}\n\n"
             + self._lines(stats, USER_KEYS, USER_KEYS[2:]),
@@ -1163,14 +1216,14 @@ class CMCMod(loader.Module):
             try:
                 user = await self._client.get_entity(args)
             except Exception:
-                return await utils.answer(message, self.strings("user_nf"))
+                return await self._answer(message, self.strings("user_nf"))
         else:
-            return await utils.answer(message, self.strings("user_args"))
+            return await self._answer(message, self.strings("user_args"))
 
         name = self._mention(user)
-        await utils.answer(message, self.strings("user_wait").format(name))
+        await self._answer(message, self.strings("user_wait").format(name))
         stats = await self.get_message_stats(chat_id, user.id, private)
-        await utils.answer(
+        await self._answer(
             message,
             f"{E_USER} {self.strings('user_head').format(name, title)}\n\n"
             + self._lines(stats, USER_KEYS, USER_KEYS[2:]),
@@ -1184,11 +1237,11 @@ class CMCMod(loader.Module):
     async def _allmsg_run(self, message):
         """- messages of all members"""
         chat_id, _, title = await self._ctx(message)
-        await utils.answer(message, self.strings("all_wait").format(title))
+        await self._answer(message, self.strings("all_wait").format(title))
 
         participants = await self.get_chat_participants(chat_id)
         if not participants:
-            return await utils.answer(message, self.strings("no_part"))
+            return await self._answer(message, self.strings("no_part"))
 
         counts = []
         for user in participants:
@@ -1203,7 +1256,7 @@ class CMCMod(loader.Module):
         counts.sort(key=lambda x: x[1], reverse=True)
 
         unit = self.strings("all_unit")
-        await utils.answer(
+        await self._answer(
             message,
             self.strings("all_head").format(title) + "\n\n"
             + "".join(f"{E_USER} {name}: {E_MSG}<b>{n}</b> {unit}\n" for name, n in counts),
@@ -1217,9 +1270,9 @@ class CMCMod(loader.Module):
     async def _chatstats_run(self, message):
         """- chat statistics"""
         chat_id, _, title = await self._ctx(message)
-        await utils.answer(message, self.strings("chat_wait").format(title))
+        await self._answer(message, self.strings("chat_wait").format(title))
         s = await self.get_chat_total_stats(chat_id)
-        await utils.answer(
+        await self._answer(
             message,
             f"{EMO['total_media']} {self.strings('chat_head').format(title)}\n\n"
             + self._lines(s, ("total_members", "admins", "deleted_accounts"), ("admins", "deleted_accounts"))
@@ -1236,14 +1289,22 @@ class CMCMod(loader.Module):
     async def _silent_run(self, message):
         """- lurkers + HTML report"""
         S = self.strings
-        chat_id, _, title = await self._ctx(message)
+        dest = message.peer_id
+        if utils.get_args_raw(message).strip():
+            ent = await self._target(message)
+            if ent is None:
+                return await self._answer(message, S("user_nf"))
+            chat_id = ent
+            title = getattr(ent, "title", None) or getattr(ent, "first_name", None) or S("this_chat")
+        else:
+            chat_id, _, title = await self._ctx(message)
 
-        key = (str(chat_id), bool(self.config["report_photos"]))
+        key = (str(getattr(chat_id, "id", None) or chat_id), bool(self.config["report_photos"]))
         cached = self._silent_cache.get(key)
         if cached and time.monotonic() - cached[0] < 900:
             silent, total = cached[1], cached[2]
         else:
-            await utils.answer(message, S("silent_wait").format(title))
+            await self._answer(message, S("silent_wait").format(title))
             participants = [
                 u for u in await self.get_chat_participants(chat_id)
                 if not getattr(u, "deleted", False) and not getattr(u, "bot", False)
@@ -1263,14 +1324,14 @@ class CMCMod(loader.Module):
                         break
                 if checked % 300 == 0:
                     try:
-                        await utils.answer(message, S("silent_prog").format(title, checked, total, len(silent)))
+                        await self._answer(message, S("silent_prog").format(title, checked, total, len(silent)))
                     except Exception:
                         pass
                 await asyncio.sleep(0.05)
 
             if silent and self.config["report_photos"]:
                 try:
-                    await utils.answer(message, S("silent_photos").format(len(silent)))
+                    await self._answer(message, S("silent_photos").format(len(silent)))
                 except Exception:
                     pass
                 await self._load_photos({u.id: u for u in participants}, silent)
@@ -1280,7 +1341,7 @@ class CMCMod(loader.Module):
             self._silent_cache[key] = (now, silent, total)
 
         if not silent:
-            return await utils.answer(message, f"{E_NOTE} {S('silent_none').format(title)}")
+            return await self._answer(message, f"{E_NOTE} {S('silent_none').format(title)}")
 
         tracks = await self._get_tracks()
         data = io.BytesIO(self._build_silent_report(title, silent, total, tracks).encode("utf-8"))
@@ -1290,12 +1351,12 @@ class CMCMod(loader.Module):
             f"{E_NOTE} {S('cap_total').format(len(silent), total)}"
         )
         try:
-            await self._client.send_file(
-                chat_id, data, caption=caption, parse_mode="html",
+            await self._send(
+                dest, data, caption, parse_mode="html",
                 reply_to=self._topic(message), force_document=True,
             )
         except Exception:
-            if await self._send_images(message, chat_id, title, silent, total, caption):
+            if await self._send_images(message, dest, title, silent, total, caption):
                 await self._send_copy(data, caption)
                 return
             if await self._send_copy(data, caption):
@@ -1303,11 +1364,11 @@ class CMCMod(loader.Module):
             else:
                 try:
                     data.seek(0)
-                    await self._client.send_file("me", data, caption=caption, parse_mode="html")
+                    await self._send("me", data, caption, parse_mode="html")
                     note = S("file_fb_me")
                 except Exception as e:
                     note = S("file_fb_fail").format(_html.escape(str(e)))
-            return await utils.answer(message, f"{E_NOTE} {note}")
+            return await self._answer(message, f"{E_NOTE} {note}")
         try:
             await message.delete()
         except Exception:
@@ -1404,7 +1465,7 @@ class CMCMod(loader.Module):
         S = self.strings
         args = utils.get_args_raw(message)
         force = "-f" in args or "--force" in args
-        m = await utils.answer(message, f"🔄 <b>{S('upd_downloading') if force else S('upd_checking')}</b>")
+        m = await self._answer(message, f"🔄 <b>{S('upd_downloading') if force else S('upd_checking')}</b>")
         try:
             await asyncio.wait_for(self._update_lock.acquire(), timeout=UPDATE_LOCK_WAIT)
         except asyncio.TimeoutError:
@@ -1481,8 +1542,8 @@ class CMCMod(loader.Module):
             image = await asyncio.get_running_loop().run_in_executor(
                 None, _render_image, title, silent, total, texts,
             )
-            await self._client.send_file(
-                chat_id, image, caption=caption, parse_mode="html",
+            await self._send(
+                chat_id, image, caption, parse_mode="html",
                 reply_to=self._topic(message), force_document=False,
             )
         except Exception:
@@ -1503,8 +1564,8 @@ class CMCMod(loader.Module):
                 target = int(target)
             data.seek(0)
             topic = self.config["report_topic"] or None
-            await self._client.send_file(
-                target, data, caption=caption,
+            await self._send(
+                target, data, caption,
                 reply_to=topic if topic and topic > 1 else None, parse_mode="html",
             )
             return True
